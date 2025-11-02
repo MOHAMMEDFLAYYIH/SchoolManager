@@ -852,7 +852,9 @@ class SchoolService {
       lastName: map['lastName'] ?? '',
       fullName: map['fullName'] ?? '',
       studentId: map['studentId'] ?? '',
-      birthDate: DateTime.tryParse(map['birthDate']?.toString() ?? '') ?? DateTime.now(),
+      birthDate:
+          DateTime.tryParse(map['birthDate']?.toString() ?? '') ??
+          DateTime.now(),
       gender: map['gender'] ?? '',
       address: map['address'] ?? '',
       phone: map['phone'] ?? '',
@@ -862,7 +864,9 @@ class SchoolService {
       classGroupId: map['classGroupId'] ?? '',
       status: map['status'] ?? 'active',
       photo: map['photo']?.toString(),
-      enrollmentDate: DateTime.tryParse(map['enrollmentDate']?.toString() ?? '') ?? DateTime.now(),
+      enrollmentDate:
+          DateTime.tryParse(map['enrollmentDate']?.toString() ?? '') ??
+          DateTime.now(),
       additionalInfo: additionalInfo,
     );
   }
@@ -1212,10 +1216,10 @@ class SchoolService {
       ),
       checkInTime: map['checkInTime'] as String?,
       checkOutTime: map['checkOutTime'] as String?,
-      additionalData: map['additionalData'] != null &&
+      additionalData:
+          map['additionalData'] != null &&
               (map['additionalData'] as String).isNotEmpty
-          ? jsonDecode(map['additionalData'] as String)
-              as Map<String, dynamic>
+          ? jsonDecode(map['additionalData'] as String) as Map<String, dynamic>
           : null,
     );
   }
@@ -1317,15 +1321,12 @@ class SchoolService {
         whereArgs.add(classGroupId);
       }
 
-      final rows = await db.rawQuery(
-        '''
+      final rows = await db.rawQuery('''
         SELECT a.* FROM attendance a
         INNER JOIN students s ON s.id = a.studentId
         WHERE ${whereClauses.join(' AND ')}
         ORDER BY a.date DESC
-        ''',
-        whereArgs,
-      );
+        ''', whereArgs);
       return rows.map((e) => _attendanceFromMap(e)).toList();
     } catch (e) {
       _logger.severe('Error querying attendance by school', e);

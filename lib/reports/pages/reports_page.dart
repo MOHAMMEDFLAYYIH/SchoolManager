@@ -4,6 +4,11 @@ import 'package:school_app/core/app_config.dart';
 import 'package:school_app/school_management/models/school.dart';
 import 'package:school_app/school_management/services/school_service.dart';
 import 'package:school_app/student_management/services/student_service.dart';
+import 'dart:typed_data';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 class ReportsPage extends StatefulWidget {
   final VoidCallback? onBack;
@@ -31,6 +36,72 @@ class _ReportsPageState extends State<ReportsPage>
   late AnimationController _previewController;
   late Animation<double> _generateButtonScale;
   late Animation<double> _previewSlide;
+
+  // PDF helpers
+  Future<pw.Font?> _tryLoadFont(String path) async {
+    try {
+      final data = await rootBundle.load(path);
+      return pw.Font.ttf(data);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Uint8List> _buildReportsPdfBytes() async {
+    final doc = pw.Document();
+
+    // Load Arabic-capable fonts
+    pw.Font? regularFont = await _tryLoadFont('assets/fonts/Cairo-Regular.ttf')
+        ?? await _tryLoadFont('Cairo-Regular.ttf');
+    pw.Font? boldFont = await _tryLoadFont('assets/fonts/Cairo-Bold.ttf')
+        ?? await _tryLoadFont('Cairo-Bold.ttf')
+        ?? regularFont;
+
+    final theme = (regularFont != null && boldFont != null)
+        ? pw.ThemeData.withFont(base: regularFont, bold: boldFont)
+        : null;
+
+    final pageTheme = pw.PageTheme(
+      textDirection: pw.TextDirection.rtl,
+      theme: theme,
+    );
+
+    final headers = <String>['الطالب', 'التقييم', 'الدرجة العامة %', 'متوسط الدرجات %'];
+    final data = _latestReports.map((r) => [
+          r.student.fullName,
+          r.getEvaluationText(),
+          r.overallScore.toStringAsFixed(1),
+          r.gradeAverage.toStringAsFixed(1),
+        ]).toList();
+
+    doc.addPage(
+      pw.MultiPage(
+        pageTheme: pageTheme,
+        build: (ctx) => [
+          pw.Text('تقرير الطلاب', style: const pw.TextStyle(fontSize: 20)),
+          pw.SizedBox(height: 8),
+          if (_selectedSchool != null)
+            pw.Text('المدرسة: ${_selectedSchool!.name}'),
+          pw.SizedBox(height: 12),
+          pw.TableHelper.fromTextArray(
+            headers: headers,
+            data: data,
+            headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+            headerDecoration: pw.BoxDecoration(color: PdfColors.grey300),
+            cellAlignment: pw.Alignment.centerRight,
+            border: null,
+          ),
+        ],
+      ),
+    );
+
+    return doc.save();
+  }
+
+  Future<void> _exportReportsPdf() async {
+    if (_latestReports.isEmpty) return;
+    await Printing.layoutPdf(onLayout: (_) => _buildReportsPdfBytes());
+  }
 
   @override
   void initState() {
@@ -327,6 +398,13 @@ class _ReportsPageState extends State<ReportsPage>
             }
           },
         ),
+        actions: [
+          IconButton(
+            tooltip: 'تصدير PDF',
+            onPressed: _latestReports.isEmpty ? null : _exportReportsPdf,
+            icon: const Icon(Icons.picture_as_pdf_outlined, color: Colors.white),
+          ),
+        ],
       ),
       body: _isDataLoading
           ? const Center(
@@ -512,6 +590,37 @@ class _ReportsPageState extends State<ReportsPage>
                     },
                   ),
 
+                  const SizedBox(height: AppConfig.spacingMD),
+
+                  if (_latestReports.isNotEmpty)
+                    Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: ElevatedButton.icon(
+                        onPressed: _exportReportsPdf,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppConfig.primaryColor,
+                          foregroundColor: Colors.white,
+                          elevation: AppConfig.buttonElevation,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: AppConfig.spacingXL,
+                            vertical: AppConfig.spacingMD,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppConfig.borderRadius,
+                            ),
+                          ),
+                        ),
+                        icon: const Icon(Icons.picture_as_pdf_outlined),
+                        label: Text(
+                          'تصدير PDF',
+                          style: GoogleFonts.cairo(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+
                   const SizedBox(height: AppConfig.spacingLG),
 
                   // خيارات إضافية
@@ -524,29 +633,6 @@ class _ReportsPageState extends State<ReportsPage>
                           },
                           icon: const Icon(Icons.save_outlined),
                           label: Text('حفظ كمسودة', style: GoogleFonts.cairo()),
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: AppConfig.borderColor),
-                            padding: const EdgeInsets.symmetric(
-                              vertical: AppConfig.spacingMD,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(
-                                AppConfig.borderRadius,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(width: AppConfig.spacingMD),
-
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () {
-                            // مشاركة الإعدادات
-                          },
-                          icon: const Icon(Icons.share_outlined),
-                          label: Text('مشاركة', style: GoogleFonts.cairo()),
                           style: OutlinedButton.styleFrom(
                             side: BorderSide(color: AppConfig.borderColor),
                             padding: const EdgeInsets.symmetric(

@@ -6,7 +6,7 @@ import 'package:school_app/school_management/pages/schools_list_page.dart';
 import 'package:school_app/reports/pages/reports_page.dart';
 import 'package:school_app/attendance_management/pages/attendance_page.dart';
 import 'package:school_app/student_management/pages/grades_page.dart';
-import 'package:school_app/features/products/pages/products_page.dart';
+ 
 
 class SmartTeacherHomePage extends StatefulWidget {
   const SmartTeacherHomePage({super.key});
@@ -17,7 +17,6 @@ class SmartTeacherHomePage extends StatefulWidget {
 
 class _SmartTeacherHomePageState extends State<SmartTeacherHomePage>
     with TickerProviderStateMixin {
-  Map<String, dynamic> _schoolStats = {};
   bool _isLoading = true;
   int _currentIndex = 0; // مؤشر العنصر النشط في شريط التنقل السفلي
 
@@ -77,12 +76,7 @@ class _SmartTeacherHomePageState extends State<SmartTeacherHomePage>
     // تهيئة البيانات التجريبية (قاعدة البيانات SQLite)
     await SchoolService.instance.initializeDemoData();
 
-    // الحصول على إحصائيات المدرسة من الخدمة المعتمدة على SQLite
-    // ملاحظة: معرف المدرسة التجريبية في خدمة قاعدة البيانات هو '1'
-    final stats = await SchoolService.instance.getSchoolStats('1');
-
     setState(() {
-      _schoolStats = stats;
       _isLoading = false;
     });
   }
@@ -189,193 +183,12 @@ class _SmartTeacherHomePageState extends State<SmartTeacherHomePage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // بطاقة الترحيب البسيطة
-          _buildWelcomeCard(),
-
-          const SizedBox(height: AppConfig.spacingXXL),
-
-          // شبكة الإحصائيات البسيطة
-          _buildStatsGrid(),
-
-          const SizedBox(height: AppConfig.spacingXXL),
+          const SizedBox(height: AppConfig.spacingMD),
 
           // الإجراءات السريعة البسيطة
           _buildQuickActions(),
 
           const SizedBox(height: AppConfig.spacingXXL),
-
-          // النشاطات الأخيرة البسيطة
-          _buildRecentActivities(),
-
-          const SizedBox(height: AppConfig.spacingXXL),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildWelcomeCard() {
-    return Container(
-      padding: const EdgeInsets.all(AppConfig.spacingLG),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [AppConfig.primaryColor, AppConfig.primaryLight],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(AppConfig.borderRadius),
-        boxShadow: [
-          BoxShadow(
-            color: AppConfig.primaryColor.withValues(alpha: 0.2),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.waving_hand_rounded,
-                color: Colors.white,
-                size: 28,
-              ),
-              const SizedBox(width: AppConfig.spacingSM),
-              Text(
-                'مرحباً بك في مدرستك الذكية!',
-                style: GoogleFonts.cairo(
-                  fontSize: AppConfig.fontSizeXLarge,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: AppConfig.spacingSM),
-          Text(
-            'نظام إدارة تعليمي متطور وشامل للمدرسة',
-            style: GoogleFonts.cairo(
-              fontSize: AppConfig.fontSizeMedium,
-              color: Colors.white.withValues(alpha: 0.9),
-            ),
-          ),
-          const SizedBox(height: AppConfig.spacingMD),
-          Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppConfig.spacingMD,
-              vertical: AppConfig.spacingSM,
-            ),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(AppConfig.borderRadius / 2),
-            ),
-            child: Text(
-              'اليوم: ${DateTime.now().toString().split(' ')[0]}',
-              style: GoogleFonts.cairo(
-                fontSize: AppConfig.fontSizeMedium,
-                fontWeight: FontWeight.w500,
-                color: Colors.white,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatsGrid() {
-    return GridView.count(
-      crossAxisCount: 2,
-      crossAxisSpacing: AppConfig.spacingMD,
-      mainAxisSpacing: AppConfig.spacingMD,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      children: [
-        _buildStatCard(
-          'إجمالي الفصول',
-          '${_schoolStats['totalClassGroups'] ?? 0}',
-          Icons.school_outlined,
-          AppConfig.primaryColor,
-          'فصل دراسي',
-        ),
-        _buildStatCard(
-          'عدد المعلمين',
-          '${_schoolStats['totalTeachers'] ?? 0}',
-          Icons.person_outline,
-          AppConfig.secondaryColor,
-          'معلم',
-        ),
-        _buildStatCard(
-          'إجمالي الطلاب',
-          '${_schoolStats['totalStudents'] ?? 0}',
-          Icons.people_outline,
-          AppConfig.successColor,
-          'طالب',
-        ),
-        _buildStatCard(
-          'معدل الإشغال',
-          '${(((_schoolStats['occupancyRate'] ?? 0.0) as num) * 100).toStringAsFixed(1)}%',
-          Icons.trending_up_outlined,
-          AppConfig.warningColor,
-          'نسبة الإشغال',
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStatCard(
-    String title,
-    String value,
-    IconData icon,
-    Color color,
-    String subtitle,
-  ) {
-    return Container(
-      padding: const EdgeInsets.all(AppConfig.spacingMD),
-      decoration: BoxDecoration(
-        color: AppConfig.cardColor,
-        borderRadius: BorderRadius.circular(AppConfig.borderRadius),
-        boxShadow: [
-          BoxShadow(
-            color: AppConfig.borderColor.withValues(alpha: 0.5),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-        border: Border.all(color: color.withValues(alpha: 0.1), width: 1),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, color: color, size: 32),
-          const SizedBox(height: AppConfig.spacingSM),
-          Text(
-            value,
-            style: GoogleFonts.cairo(
-              fontSize: AppConfig.fontSizeXXLarge,
-              fontWeight: FontWeight.bold,
-              color: color,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            title,
-            style: GoogleFonts.cairo(
-              fontSize: AppConfig.fontSizeMedium,
-              color: AppConfig.textSecondaryColor,
-            ),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 2),
-          Text(
-            subtitle,
-            style: GoogleFonts.cairo(
-              fontSize: AppConfig.fontSizeSmall,
-              color: AppConfig.textLightColor,
-            ),
-            textAlign: TextAlign.center,
-          ),
         ],
       ),
     );
@@ -490,101 +303,6 @@ class _SmartTeacherHomePageState extends State<SmartTeacherHomePage>
     );
   }
 
-  Widget _buildRecentActivities() {
-    return Column(
-      children: [
-        _buildActivityCard(
-          'تم إضافة طالب جديد',
-          'أحمد محمد علي - الصف الأول أ',
-          'منذ ساعتين',
-          Icons.person_add,
-          AppConfig.successColor,
-        ),
-        _buildActivityCard(
-          'تم تحديث جدول الحصص',
-          'جدول حصص الرياضيات - الصف الثاني',
-          'منذ 4 ساعات',
-          Icons.schedule,
-          AppConfig.infoColor,
-        ),
-        _buildActivityCard(
-          'تم إرسال تقرير شهري',
-          'تقرير أداء الطلاب لشهر أكتوبر',
-          'منذ يوم واحد',
-          Icons.analytics,
-          AppConfig.warningColor,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildActivityCard(
-    String title,
-    String subtitle,
-    String time,
-    IconData icon,
-    Color color,
-  ) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: AppConfig.spacingMD),
-      padding: const EdgeInsets.all(AppConfig.spacingMD),
-      decoration: BoxDecoration(
-        color: AppConfig.cardColor,
-        borderRadius: BorderRadius.circular(AppConfig.borderRadius),
-        boxShadow: [
-          BoxShadow(
-            color: AppConfig.borderColor.withValues(alpha: 0.5),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(AppConfig.borderRadius / 2),
-            ),
-            child: Icon(icon, color: color, size: 20),
-          ),
-          const SizedBox(width: AppConfig.spacingMD),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: GoogleFonts.cairo(
-                    fontSize: AppConfig.fontSizeMedium,
-                    fontWeight: FontWeight.w600,
-                    color: AppConfig.textPrimaryColor,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: GoogleFonts.cairo(
-                    fontSize: AppConfig.fontSizeSmall,
-                    color: AppConfig.textSecondaryColor,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Text(
-            time,
-            style: GoogleFonts.cairo(
-              fontSize: AppConfig.fontSizeSmall,
-              color: AppConfig.textLightColor,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildDrawer() {
     return Drawer(
       child: Container(
@@ -658,17 +376,6 @@ class _SmartTeacherHomePageState extends State<SmartTeacherHomePage>
                     });
                   }),
                   _buildDrawerItem(
-                    Icons.inventory_2_outlined,
-                    'المنتجات',
-                    () {
-                      Navigator.of(context).pop();
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const ProductsPage()),
-                      );
-                    },
-                    color: AppConfig.infoColor,
-                  ),
-                  _buildDrawerItem(
                     Icons.check_circle_outline,
                     'تسجيل الحضور',
                     () {
@@ -706,17 +413,7 @@ class _SmartTeacherHomePageState extends State<SmartTeacherHomePage>
               ),
               child: Column(
                 children: [
-                  _buildDrawerItem(Icons.settings_outlined, 'الإعدادات', () {
-                    Navigator.of(context).pop();
-                  }),
-                  _buildDrawerItem(
-                    Icons.logout_outlined,
-                    'تسجيل الخروج',
-                    () {
-                      Navigator.of(context).pop();
-                    },
-                    color: AppConfig.errorColor,
-                  ),
+                  
                 ],
               ),
             ),

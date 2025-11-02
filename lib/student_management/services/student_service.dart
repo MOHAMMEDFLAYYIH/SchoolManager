@@ -271,8 +271,7 @@ class StudentService {
       final db = await _dbHelper.database;
       final List<Map<String, dynamic>> maps = await db.query(
         tableStudents,
-        where:
-            '($columnFullName LIKE ? OR $columnStudentId LIKE ?) AND $columnIsActive = ?',
+        where: '($columnFullName LIKE ? OR $columnPhone LIKE ?) AND $columnIsActive = ?',
         whereArgs: ['%$query%', '%$query%', 1],
       );
 

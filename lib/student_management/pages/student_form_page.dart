@@ -17,7 +17,6 @@ class _StudentFormPageState extends State<StudentFormPage> {
   final _formKey = GlobalKey<FormState>();
   late TextEditingController _firstNameController;
   late TextEditingController _lastNameController;
-  late TextEditingController _studentIdController;
   late TextEditingController _birthDateController;
   late TextEditingController _addressController;
   late TextEditingController _phoneController;
@@ -34,9 +33,6 @@ class _StudentFormPageState extends State<StudentFormPage> {
       text: student?.firstName ?? '',
     );
     _lastNameController = TextEditingController(text: student?.lastName ?? '');
-    _studentIdController = TextEditingController(
-      text: student?.studentId ?? '',
-    );
     _birthDateController = TextEditingController(
       text: student?.birthDate.toString().split(' ')[0] ?? '',
     );
@@ -56,7 +52,6 @@ class _StudentFormPageState extends State<StudentFormPage> {
   void dispose() {
     _firstNameController.dispose();
     _lastNameController.dispose();
-    _studentIdController.dispose();
     _birthDateController.dispose();
     _addressController.dispose();
     _phoneController.dispose();
@@ -89,8 +84,6 @@ class _StudentFormPageState extends State<StudentFormPage> {
               _buildTextField('الاسم الأول', _firstNameController),
               const SizedBox(height: 16),
               _buildTextField('اللقب', _lastNameController),
-              const SizedBox(height: 16),
-              _buildTextField('رقم الطالب', _studentIdController),
               const SizedBox(height: 16),
               _buildDateField('تاريخ الميلاد', _birthDateController),
               const SizedBox(height: 16),
@@ -248,6 +241,8 @@ class _StudentFormPageState extends State<StudentFormPage> {
         final fullName =
             '${_firstNameController.text} ${_lastNameController.text}';
         final now = DateTime.now();
+        final generatedStudentId =
+            widget.student?.studentId ?? 'STD-${DateTime.now().millisecondsSinceEpoch}';
 
         final student = Student(
           id:
@@ -256,7 +251,7 @@ class _StudentFormPageState extends State<StudentFormPage> {
           firstName: _firstNameController.text,
           lastName: _lastNameController.text,
           fullName: fullName,
-          studentId: _studentIdController.text,
+          studentId: generatedStudentId,
           birthDate: DateTime.parse(_birthDateController.text),
           gender: _gender,
           address: _addressController.text,

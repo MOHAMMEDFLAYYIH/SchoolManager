@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:school_app/student_management/services/student_service.dart';
 import 'package:school_app/core/app_config.dart';
-import 'student_report_page.dart';
 import 'package:school_app/attendance_management/pages/attendance_page.dart';
 import 'grades_page.dart';
 
@@ -19,6 +18,8 @@ class _StudentsListPageState extends State<StudentsListPage> {
   bool _isLoading = true;
   String _searchQuery = '';
   String _selectedFilter = 'الكل';
+  int? _sortColumnIndex;
+  bool _sortAscending = true;
 
   @override
   void initState() {
@@ -65,8 +66,8 @@ class _StudentsListPageState extends State<StudentsListPage> {
     final query = _searchQuery.toLowerCase();
     return students.where((student) {
       return student.fullName.toLowerCase().contains(query) ||
-          student.studentId.toLowerCase().contains(query) ||
-          student.phone.toLowerCase().contains(query);
+          student.phone.toLowerCase().contains(query) ||
+          student.address.toLowerCase().contains(query);
     }).toList();
   }
 
@@ -198,7 +199,7 @@ class _StudentsListPageState extends State<StudentsListPage> {
             ),
           ),
 
-          // قائمة الطلاب
+          // جدول الطلاب (نمط إكسل)
           Expanded(
             child: _isLoading
                 ? const Center(
@@ -207,13 +208,8 @@ class _StudentsListPageState extends State<StudentsListPage> {
                     ),
                   )
                 : _filteredStudents.isEmpty
-                ? _buildEmptyState()
-                : ListView.builder(
-                    itemCount: _filteredStudents.length,
-                    itemBuilder: (context, index) {
-                      return _buildStudentCard(_filteredStudents[index]);
-                    },
-                  ),
+                    ? _buildEmptyState()
+                    : _buildStudentsTable(),
           ),
         ],
       ),
@@ -231,6 +227,91 @@ class _StudentsListPageState extends State<StudentsListPage> {
         ),
       ),
     );
+  }
+
+  Widget _buildStudentsTable() {
+    // لعرض الجدول أفقياً وعمودياً عند الحاجة
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minWidth: MediaQuery.of(context).size.width),
+        child: SingleChildScrollView(
+          child: DataTable(
+            sortColumnIndex: _sortColumnIndex,
+            sortAscending: _sortAscending,
+            columns: [
+              DataColumn(
+                label: const Text('الاسم الكامل'),
+                onSort: (i, asc) => _sortBy<String>(i, asc, (s) => s.fullName.toLowerCase()),
+              ),
+              DataColumn(
+                numeric: true,
+                label: const Text('العمر'),
+                onSort: (i, asc) => _sortBy<num>(i, asc, (s) => s.age),
+              ),
+              DataColumn(
+                label: const Text('الجنس'),
+                onSort: (i, asc) => _sortBy<String>(i, asc, (s) => s.gender.toString()),
+              ),
+              const DataColumn(label: Text('الهاتف')),
+              const DataColumn(label: Text('الحالة')),
+              const DataColumn(label: Text('إجراءات')),
+            ],
+            rows: _filteredStudents.map((s) {
+              return DataRow(cells: [
+                DataCell(Text(s.fullName)),
+                DataCell(Text('${s.age}')),
+                DataCell(Text(s.gender == 'male' || s.gender == 'ذكر' ? 'ذكر' : 'أنثى')),
+                DataCell(Text(s.phone)),
+                DataCell(Text(s.status == AppConfig.studentStatusActive ? 'نشط' : 'غير نشط')),
+                DataCell(Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'تفاصيل',
+                      icon: const Icon(Icons.visibility),
+                      onPressed: () => _showStudentDetails(s),
+                    ),
+                    IconButton(
+                      tooltip: 'الحضور',
+                      icon: const Icon(Icons.check_circle),
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (context) => const AttendancePage(),
+                          ),
+                        );
+                      },
+                    ),
+                    IconButton(
+                      tooltip: 'الدرجات',
+                      icon: const Icon(Icons.grade),
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (context) => const GradesPage()),
+                        );
+                      },
+                    ),
+                  ],
+                )),
+              ]);
+            }).toList(),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _sortBy<T>(int columnIndex, bool ascending, Comparable<T> Function(Student s) getField) {
+    setState(() {
+      _sortColumnIndex = columnIndex;
+      _sortAscending = ascending;
+      _filteredStudents.sort((a, b) {
+        final aValue = getField(a);
+        final bValue = getField(b);
+        final order = ascending ? 1 : -1;
+        return order * Comparable.compare(aValue, bValue);
+      });
+    });
   }
 
   Widget _buildFilterChip(String label) {
@@ -300,168 +381,7 @@ class _StudentsListPageState extends State<StudentsListPage> {
     );
   }
 
-  Widget _buildStudentCard(Student student) {
-    return Container(
-      margin: const EdgeInsets.symmetric(
-        horizontal: AppConfig.spacingMD,
-        vertical: AppConfig.spacingSM,
-      ),
-      decoration: BoxDecoration(
-        color: AppConfig.cardColor,
-        borderRadius: BorderRadius.circular(AppConfig.borderRadius),
-        boxShadow: [
-          BoxShadow(
-            color: AppConfig.borderColor.withValues(alpha: 0.5),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-        border: Border.all(
-          color: AppConfig.borderColor.withValues(alpha: 0.5),
-          width: 1,
-        ),
-      ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.all(AppConfig.spacingMD),
-        leading: CircleAvatar(
-          radius: 25,
-          backgroundColor: AppConfig.primaryColor.withValues(alpha: 0.1),
-          child: Text(
-            student.initials,
-            style: GoogleFonts.cairo(
-              fontSize: AppConfig.fontSizeLarge,
-              fontWeight: FontWeight.bold,
-              color: AppConfig.primaryColor,
-            ),
-          ),
-        ),
-        title: Text(
-          student.fullName,
-          style: GoogleFonts.cairo(
-            fontSize: AppConfig.fontSizeLarge,
-            fontWeight: FontWeight.w600,
-            color: AppConfig.textPrimaryColor,
-          ),
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 4),
-            Text(
-              'رقم الطالب: ${student.studentId}',
-              style: GoogleFonts.cairo(
-                fontSize: AppConfig.fontSizeMedium,
-                color: AppConfig.textSecondaryColor,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              'العمر: ${student.age} سنة',
-              style: GoogleFonts.cairo(
-                fontSize: AppConfig.fontSizeSmall,
-                color: AppConfig.textLightColor,
-              ),
-            ),
-          ],
-        ),
-        trailing: PopupMenuButton<String>(
-          onSelected: (value) {
-            switch (value) {
-              case 'view':
-                _showStudentDetails(student);
-                break;
-              case 'edit':
-                // تعديل بيانات الطالب
-                break;
-              case 'attendance':
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (context) => const AttendancePage(),
-                  ),
-                );
-                break;
-              case 'grades':
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (context) => const GradesPage()),
-                );
-                break;
-              case 'report':
-                _showStudentReport(student);
-                break;
-            }
-          },
-          itemBuilder: (context) => [
-            const PopupMenuItem(
-              value: 'view',
-              child: Row(
-                children: [
-                  Icon(Icons.visibility, size: 20),
-                  SizedBox(width: 8),
-                  Text('عرض التفاصيل'),
-                ],
-              ),
-            ),
-            const PopupMenuItem(
-              value: 'edit',
-              child: Row(
-                children: [
-                  Icon(Icons.edit, size: 20),
-                  SizedBox(width: 8),
-                  Text('تعديل'),
-                ],
-              ),
-            ),
-            const PopupMenuItem(
-              value: 'attendance',
-              child: Row(
-                children: [
-                  Icon(Icons.check_circle, size: 20),
-                  SizedBox(width: 8),
-                  Text('الحضور'),
-                ],
-              ),
-            ),
-            const PopupMenuItem(
-              value: 'grades',
-              child: Row(
-                children: [
-                  Icon(Icons.grade, size: 20),
-                  SizedBox(width: 8),
-                  Text('الدرجات'),
-                ],
-              ),
-            ),
-            PopupMenuItem(
-              value: 'report',
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.analytics,
-                    size: 20,
-                    color: AppConfig.primaryColor,
-                  ),
-                  SizedBox(width: 8),
-                  Text(
-                    'التقرير',
-                    style: GoogleFonts.cairo(
-                      color: AppConfig.primaryColor,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        onTap: () {
-          _showStudentDetails(student);
-        },
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppConfig.borderRadius),
-        ),
-      ),
-    );
-  }
+  
 
   void _showFilterDialog() {
     showDialog(
@@ -661,7 +581,7 @@ class _StudentsListPageState extends State<StudentsListPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildDetailRow('الاسم الكامل', student.fullName),
-              _buildDetailRow('رقم الطالب', student.studentId),
+              // تم حذف عرض رقم الطالب
               _buildDetailRow(
                 'تاريخ الميلاد',
                 '${student.birthDate.toString().split(' ')[0]} (${student.age} سنة)',
@@ -693,14 +613,6 @@ class _StudentsListPageState extends State<StudentsListPage> {
             child: Text('إغلاق', style: GoogleFonts.cairo()),
           ),
         ],
-      ),
-    );
-  }
-
-  void _showStudentReport(Student student) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => StudentReportPage(studentId: student.id),
       ),
     );
   }

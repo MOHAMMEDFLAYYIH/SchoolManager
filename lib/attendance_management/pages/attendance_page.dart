@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-
 import 'package:school_app/core/app_config.dart';
 import 'package:school_app/student_management/services/student_service.dart';
 import 'package:school_app/school_management/models/school.dart';
@@ -10,8 +9,6 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:flutter/services.dart' show rootBundle;
-
- 
 
 class AttendancePage extends StatefulWidget {
   final School? school;
@@ -99,7 +96,9 @@ class _AttendancePageState extends State<AttendancePage>
       );
 
       // إحضار جميع الطلاب حسب المدرسة فقط
-      final students = await _studentService.getStudentsBySchool(selectedSchool.id);
+      final students = await _studentService.getStudentsBySchool(
+        selectedSchool.id,
+      );
 
       setState(() {
         _schools = schools;
@@ -117,8 +116,8 @@ class _AttendancePageState extends State<AttendancePage>
       // Get all schools
       final schools = await _schoolService.getSchools();
       // احترم الاختيار الحالي إذا كان موجودًا، وإلا اختر أول مدرسة
-      School? selectedSchool = _selectedSchool ??
-          (schools.isNotEmpty ? schools.first : null);
+      School? selectedSchool =
+          _selectedSchool ?? (schools.isNotEmpty ? schools.first : null);
 
       // الحصول على جميع الطلاب حسب المدرسة المحددة فقط
       final students = selectedSchool != null
@@ -274,7 +273,9 @@ class _AttendancePageState extends State<AttendancePage>
     if (schoolId == null) return;
 
     final exists = _schools.any((s) => s.id == schoolId);
-    final selected = exists ? _schools.firstWhere((s) => s.id == schoolId) : null;
+    final selected = exists
+        ? _schools.firstWhere((s) => s.id == schoolId)
+        : null;
 
     setState(() {
       _selectedSchool = selected;
@@ -316,18 +317,15 @@ class _AttendancePageState extends State<AttendancePage>
     final headers = ['الرقم', 'اسم الطالب', 'الحالة'];
     final rows = _students.map((s) {
       final status = _attendanceStatus[s.id] ?? AppConfig.attendancePresent;
-      return [
-        s.studentId,
-        s.fullName,
-        _getStatusText(status),
-      ];
+      return [s.studentId, s.fullName, _getStatusText(status)];
     }).toList();
-    final dateStr = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
+    final dateStr =
+        '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
 
     // Try to load Arabic-capable fonts (assets path then project root)
     pw.Font? regularFont;
     pw.Font? boldFont;
-    Future<pw.Font?> _tryLoad(String path) async {
+    Future<pw.Font?> tryLoad(String path) async {
       try {
         final data = await rootBundle.load(path);
         return pw.Font.ttf(data);
@@ -335,10 +333,13 @@ class _AttendancePageState extends State<AttendancePage>
         return null;
       }
     }
-    regularFont = await _tryLoad('assets/fonts/Cairo-Regular.ttf')
-        ?? await _tryLoad('Cairo-Regular.ttf');
-    boldFont = await _tryLoad('assets/fonts/Cairo-Bold.ttf')
-        ?? await _tryLoad('Cairo-Bold.ttf');
+
+    regularFont =
+        await tryLoad('assets/fonts/Cairo-Regular.ttf') ??
+        await tryLoad('Cairo-Regular.ttf');
+    boldFont =
+        await tryLoad('assets/fonts/Cairo-Bold.ttf') ??
+        await tryLoad('Cairo-Bold.ttf');
     if (boldFont == null && regularFont != null) {
       boldFont = regularFont; // fallback
     }
@@ -348,9 +349,7 @@ class _AttendancePageState extends State<AttendancePage>
             textDirection: pw.TextDirection.rtl,
             theme: pw.ThemeData.withFont(base: regularFont, bold: boldFont),
           )
-        : const pw.PageTheme(
-            textDirection: pw.TextDirection.rtl,
-          );
+        : const pw.PageTheme(textDirection: pw.TextDirection.rtl);
 
     doc.addPage(
       pw.MultiPage(
@@ -359,7 +358,13 @@ class _AttendancePageState extends State<AttendancePage>
           pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
-              pw.Text('تقرير الحضور', style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold)),
+              pw.Text(
+                'تقرير الحضور',
+                style: pw.TextStyle(
+                  fontSize: 20,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
               pw.SizedBox(height: 6),
               pw.Text('المدرسة: ${_selectedSchool?.name ?? '-'}'),
               pw.Text('التاريخ: $dateStr'),
@@ -373,7 +378,9 @@ class _AttendancePageState extends State<AttendancePage>
                 cellAlignment: pw.Alignment.centerRight,
               ),
               pw.SizedBox(height: 12),
-              pw.Text('حاضرون: $_presentCount | غائبون: $_absentCount | مجازون: $_excusedCount | متأخرون: $_lateCount'),
+              pw.Text(
+                'حاضرون: $_presentCount | غائبون: $_absentCount | مجازون: $_excusedCount | متأخرون: $_lateCount',
+              ),
             ],
           ),
         ],
@@ -384,13 +391,12 @@ class _AttendancePageState extends State<AttendancePage>
   }
 
   Future<void> _printAttendanceReport() async {
-    await Printing.layoutPdf(onLayout: (format) async => await _buildAttendancePdfBytes());
+    await Printing.layoutPdf(
+      onLayout: (format) async => await _buildAttendancePdfBytes(),
+    );
   }
 
-  Future<void> _shareAttendanceReport() async {
-    final bytes = await _buildAttendancePdfBytes();
-    await Printing.sharePdf(bytes: bytes, filename: 'attendance_report.pdf');
-  }
+  
 
   @override
   Widget build(BuildContext context) {
@@ -423,11 +429,6 @@ class _AttendancePageState extends State<AttendancePage>
             icon: const Icon(Icons.print_outlined, color: Colors.white),
             onPressed: _printAttendanceReport,
             tooltip: 'طباعة تقرير الحضور',
-          ),
-          IconButton(
-            icon: const Icon(Icons.share_outlined, color: Colors.white),
-            onPressed: _shareAttendanceReport,
-            tooltip: 'مشاركة تقرير الحضور',
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),

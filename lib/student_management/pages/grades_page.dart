@@ -10,7 +10,61 @@ import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import 'package:pluto_grid/pluto_grid.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'dart:convert';
+import 'dart:async';
+import 'package:school_app/core/database/db_helper.dart';
+import 'package:sqflite/sqflite.dart' show ConflictAlgorithm;
+
+
+class _GradeColCfg {
+  String label;
+  String term; // أحد عناصر _terms
+  int monthIndex; // 1..3 وفق _months
+
+  _GradeColCfg({
+    required this.label,
+    required this.term,
+    required this.monthIndex,
+  });
+
+  _GradeColCfg copyWith({String? label, String? term, int? monthIndex}) {
+    return _GradeColCfg(
+      label: label ?? this.label,
+      term: term ?? this.term,
+      monthIndex: monthIndex ?? this.monthIndex,
+    );
+  }
+}
+
+enum DynColType { text, number, percent }
+
+class _DynCol {
+  final String id;
+  String title;
+  final DynColType type;
+  final bool readOnly;
+  final double? maxScore; // optional per-column max
+
+  _DynCol({required this.id, required this.title, required this.type, this.readOnly = false, this.maxScore});
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'type': type.name,
+        'readOnly': readOnly,
+        'maxScore': maxScore,
+      };
+
+  static _DynCol fromJson(Map<String, dynamic> j) => _DynCol(
+        id: j['id'] as String,
+        title: j['title'] as String,
+        type: DynColType.values.firstWhere((t) => t.name == j['type']),
+        readOnly: (j['readOnly'] as bool?) ?? false,
+        maxScore: (j['maxScore'] as num?)?.toDouble(),
+      );
+}
 
 class GradesPage extends StatefulWidget {
   final VoidCallback? onBack;
@@ -21,33 +75,33 @@ class GradesPage extends StatefulWidget {
 }
 
 class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
-  final StudentService _studentService = StudentService();
-  List<Student> _students = [];
   final Map<String, List<Grade>> _gradesByStudent = {};
   bool _isLoading = true;
   // Selection state (uses real schools/class groups)
   List<School> _schools = [];
   School? _selectedSchool;
-  String _selectedTerm = 'الفصل الأول';
-  String _selectedMonthLabel = 'الشهر الأول';
-  String _selectedGradeType = 'monthly';
+  final String _selectedTerm = 'الفصل الأول';
+  final String _selectedMonthLabel = 'الشهر الأول';
+  final String _selectedGradeType = 'monthly';
   double _classAverage = 0.0;
   int _excellentCount = 0;
   int _goodCount = 0;
   int _passCount = 0;
   int _failCount = 0;
+  final DateTime _selectedDate = DateTime.now();
+  
 
   late AnimationController _saveButtonController;
   late AnimationController _statsController;
   late Animation<double> _saveButtonScale;
   late Animation<double> _statsSlide;
+  
+
+  // إعدادات أعمدة مخصصة للـ Spreadsheet (كل عمود يرتبط بفصل وشهر محددين مع عنوان مخصص)
+  // هذا يحقق "كل شيء مخصص" من ناحية عدد الأعمدة والعناوين وربط كل عمود بالشهر المطلوب
+  final List<_GradeColCfg> _customGradeColumns = [];
 
   final List<String> _terms = ['الفصل الأول', 'الفصل الثاني'];
-  final List<String> _months = ['الشهر الأول', 'الشهر الثاني', 'الشهر الثالث'];
-  final Map<String, String> _gradeTypeLabels = {
-    'monthly': 'امتحان شهري',
-    'daily': 'امتحان يومي',
-  };
 
   @override
   void initState() {
@@ -94,65 +148,190 @@ class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
 
     // تحميل البيانات
     _initializeData();
+
+    // تهيئة أعمدة افتراضية (يمكن للمستخدم تعديلها بالكامل)
+    if (_customGradeColumns.isEmpty) {
+      _customGradeColumns.addAll([
+        _GradeColCfg(label: 'اختبار 1', term: _terms.first, monthIndex: 1),
+        _GradeColCfg(label: 'اختبار 2', term: _terms.first, monthIndex: 2),
+      ]);
+    }
   }
 
-  Future<void> _updateDailyGrade(String studentId, double score) async {
-    final grades = _gradesByStudent[studentId] ?? [];
-    grades.sort((a, b) => b.date.compareTo(a.date));
-    Grade? existing;
-    final now = DateTime.now();
-    for (final g in grades) {
-      if (g.gradeType == 'daily') {
-        final d = g.date;
-        if (d.year == now.year && d.month == now.month && d.day == now.day) {
-          existing = g;
-          break;
-        }
-      }
-    }
+  // ===== Dynamic Table State =====
+  String _tableName = 'Table1';
+  List<_DynCol> _dynCols = [];
+  List<Map<String, String>> _dynRows = [];
+  static const String _kvKeyBase = 'grades_table_v1';
+  String get _kvKey => '${_kvKeyBase}_${_selectedSchool?.id ?? 'all'}_${_dateKey(_selectedDate)}';
 
-    Grade updated =
-        (existing ??
-                Grade(
-                  id: 'grade_${DateTime.now().millisecondsSinceEpoch}',
-                  studentId: studentId,
-                  schoolId: _selectedSchool?.id ?? '1',
-                  subject: 'عام',
-                  gradeType: 'daily',
-                  score: score,
-                  maxScore: 100.0,
-                  date: now,
-                  recordedBy: 'teacher_1',
-                  recordedAt: now,
-                  additionalData: {'date': now.toIso8601String()},
-                ))
-            .copyWith(
-              score: score,
-              date: now,
-              recordedAt: now,
-              gradeType: 'daily',
-              subject: 'عام',
-              additionalData: {'date': now.toIso8601String()},
-            );
+  String _dateKey(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y$m$day';
+  }
 
-    bool ok;
-    if (existing != null) {
-      ok = await _studentService.updateGrade(updated);
-      if (ok) {
-        final idx = grades.indexWhere((g) => g.id == existing!.id);
-        if (idx != -1) grades[idx] = updated;
-      }
+  Future<void> _ensureKv() async {
+    final db = await DatabaseHelper.instance.database;
+    await db.execute('CREATE TABLE IF NOT EXISTS app_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+  }
+
+  Future<void> _loadDynTable() async {
+    await _ensureKv();
+    final db = await DatabaseHelper.instance.database;
+    final rows = await db.query('app_kv', where: 'key=?', whereArgs: [_kvKey]);
+    if (rows.isEmpty) {
+      // start from zero: no columns, no rows
+      _dynCols = [];
+      _dynRows = [];
+      await _saveDynTable();
     } else {
-      ok = await _studentService.addGrade(updated);
-      if (ok) grades.add(updated);
+      final data = jsonDecode(rows.first['value'] as String) as Map<String, dynamic>;
+      _tableName = (data['name'] as String?)?.trim().isNotEmpty == true ? data['name'] as String : 'Table1';
+      _dynCols = (data['cols'] as List).map((e) => _DynCol.fromJson(e)).toList();
+      _dynRows = (data['rows'] as List).map((e) => Map<String, String>.from(e as Map)).toList();
     }
-    if (ok) {
-      setState(() {
-        _gradesByStudent[studentId] = grades;
-        _calculateStats();
-      });
-    }
+    setState(() {});
   }
+
+  Future<void> _saveDynTable() async {
+    await _ensureKv();
+    final db = await DatabaseHelper.instance.database;
+    final payload = jsonEncode({
+      'name': _tableName,
+      'cols': _dynCols.map((e) => e.toJson()).toList(),
+      'rows': _dynRows,
+    });
+    await db.insert('app_kv', {'key': _kvKey, 'value': payload}, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  
+
+  Future<Uint8List> _buildDynGradesPdfBytes() async {
+    final doc = pw.Document();
+    // Try to load Arabic-capable fonts
+    pw.Font? regularFont;
+    pw.Font? boldFont;
+    Future<pw.Font?> tryLoad(String path) async {
+      try {
+        final data = await rootBundle.load(path);
+        return pw.Font.ttf(data);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    regularFont = await tryLoad('assets/fonts/Cairo-Regular.ttf') ?? await tryLoad('Cairo-Regular.ttf');
+    boldFont = await tryLoad('assets/fonts/Cairo-Bold.ttf') ?? await tryLoad('Cairo-Bold.ttf');
+    if (boldFont == null && regularFont != null) {
+      boldFont = regularFont;
+    }
+
+    final pageTheme = (regularFont != null && boldFont != null)
+        ? pw.PageTheme(
+            textDirection: pw.TextDirection.rtl,
+            theme: pw.ThemeData.withFont(base: regularFont, bold: boldFont),
+          )
+        : const pw.PageTheme(textDirection: pw.TextDirection.rtl);
+
+    // Build headers from dynamic columns, include max if provided
+    final headers = _dynCols
+        .map((c) => c.maxScore != null && c.type == DynColType.number && !c.readOnly
+            ? '${c.title} / ${c.maxScore!.toStringAsFixed(0)}'
+            : c.title)
+        .toList();
+    // Build data rows in same order
+    final dataRows = _dynRows.map((r) => _dynCols.map((c) => r[c.id] ?? '').toList()).toList();
+    final dateStr = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
+
+    doc.addPage(
+      pw.MultiPage(
+        pageTheme: pageTheme,
+        build: (context) => [
+          pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text(
+                'تقرير الدرجات - ${_tableName.isEmpty ? 'جدول' : _tableName}',
+                style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold),
+              ),
+              pw.SizedBox(height: 6),
+              pw.Text('المدرسة: ${_selectedSchool?.name ?? '-'}'),
+              pw.Text('التاريخ: $dateStr'),
+              pw.SizedBox(height: 12),
+              pw.TableHelper.fromTextArray(
+                headers: headers,
+                data: dataRows,
+                headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                headerDecoration: pw.BoxDecoration(color: PdfColors.grey300),
+                border: null,
+                cellAlignment: pw.Alignment.centerRight,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return doc.save();
+  }
+
+  Future<void> _printDynGrades() async {
+    await Printing.layoutPdf(
+      onLayout: (format) async => await _buildDynGradesPdfBytes(),
+    );
+  }
+
+  // Manual table controls
+  void _addRow() {
+    final id = 'r${DateTime.now().microsecondsSinceEpoch}';
+    final row = <String, String>{'id': id};
+    for (final c in _dynCols) {
+      row[c.id] = '';
+    }
+    _dynRows.add(row);
+    setState(() {});
+    _saveDynTable();
+  }
+
+  void _deleteRow(String rowId) {
+    _dynRows.removeWhere((r) => r['id'] == rowId);
+    setState(() {});
+    _saveDynTable();
+  }
+
+  void _quickAddColumn() {
+    final nextIndex = _dynCols.length + 1;
+    final title = 'عمود $nextIndex';
+    final id = _uniqueColIdFromTitle(title);
+    _dynCols.add(_DynCol(id: id, title: title, type: DynColType.text));
+    for (final r in _dynRows) {
+      r[id] = '';
+    }
+    setState(() {});
+    _saveDynTable();
+  }
+
+  String _uniqueColIdFromTitle(String title) {
+    String base = title.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_');
+    if (base.isEmpty) base = 'col';
+    String candidate = base;
+    int i = 1;
+    while (_dynCols.any((c) => c.id == candidate)) {
+      candidate = '${base}_$i';
+      i++;
+    }
+    return candidate;
+  }
+
+  
+
+  
+
+  
+
+  
 
   void _startAnimations() async {
     await Future.delayed(const Duration(milliseconds: 200));
@@ -166,26 +345,15 @@ class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
 
     try {
       await SchoolService.instance.initializeDemoData();
-      await _studentService.initializeDemoStudents();
 
       final schools = await SchoolService.instance.getSchools();
       final selectedSchool = schools.isNotEmpty ? schools.first : null;
 
-      List<Student> students = [];
-      if (selectedSchool != null) {
-        students = await _studentService.getStudentsBySchool(selectedSchool.id);
-      }
-
-      _gradesByStudent.clear();
-      for (final s in students) {
-        final allGrades = await _studentService.getStudentGrades(s.id);
-        _gradesByStudent[s.id] = allGrades;
-      }
-
+      // Initialize dynamic table after data load
+      _schools = schools;
+      await _loadDynTable();
       setState(() {
-        _schools = schools;
         _selectedSchool = selectedSchool;
-        _students = students;
         _calculateStats();
       });
     } catch (e) {
@@ -196,32 +364,6 @@ class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
         _isLoading = false;
       });
     }
-  }
-
-  Future<void> _onSchoolChanged(String? schoolId) async {
-    if (schoolId == null) return;
-    final school = _schools.firstWhere((s) => s.id == schoolId);
-    setState(() {
-      _selectedSchool = school;
-      _students = [];
-      _gradesByStudent.clear();
-      _isLoading = true;
-    });
-
-    List<Student> students = [];
-    students = await _studentService.getStudentsBySchool(schoolId);
-
-    _gradesByStudent.clear();
-    for (final s in students) {
-      final allGrades = await _studentService.getStudentGrades(s.id);
-      _gradesByStudent[s.id] = allGrades;
-    }
-
-    setState(() {
-      _students = students;
-      _calculateStats();
-      _isLoading = false;
-    });
   }
 
   // تم إزالة تغيير الشعبة. الاعتماد فقط على المدرسة.
@@ -316,294 +458,8 @@ class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _updateMonthlyGrade(
-    String studentId,
-    String term,
-    int monthIndex,
-    double score,
-  ) async {
-    final grades = _gradesByStudent[studentId] ?? [];
-    grades.sort((a, b) => b.date.compareTo(a.date));
-    Grade? existing;
-    for (final g in grades) {
-      if (g.gradeType == 'monthly') {
-        final data = g.additionalData ?? {};
-        if (data['term'] == term && data['month'] == monthIndex) {
-          existing = g;
-          break;
-        }
-      }
-    }
+  
 
-    Grade updated =
-        (existing ??
-                Grade(
-                  id: 'grade_${DateTime.now().millisecondsSinceEpoch}',
-                  studentId: studentId,
-                  schoolId: '1',
-                  subject: 'عام',
-                  gradeType: 'monthly',
-                  score: score,
-                  maxScore: 100.0,
-                  date: DateTime.now(),
-                  recordedBy: 'teacher_1',
-                  recordedAt: DateTime.now(),
-                  additionalData: {'term': term, 'month': monthIndex},
-                ))
-            .copyWith(
-              score: score,
-              date: DateTime.now(),
-              recordedAt: DateTime.now(),
-              additionalData: {'term': term, 'month': monthIndex},
-              gradeType: 'monthly',
-              subject: 'عام',
-            );
-
-    bool ok;
-    if (existing != null) {
-      ok = await _studentService.updateGrade(updated);
-      if (ok) {
-        final idx = grades.indexWhere((g) => g.id == existing!.id);
-        if (idx != -1) grades[idx] = updated;
-      }
-    } else {
-      ok = await _studentService.addGrade(updated);
-      if (ok) grades.add(updated);
-    }
-    if (ok) {
-      setState(() {
-        _gradesByStudent[studentId] = grades;
-        _calculateStats();
-      });
-    }
-  }
-
-  Future<void> _addGradeDialog(Student student) async {
-    final formKey = GlobalKey<FormState>();
-    double value = 0;
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppConfig.cardColor,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(AppConfig.borderRadius * 1.5),
-        ),
-      ),
-      builder: (ctx) {
-        final media = MediaQuery.of(ctx);
-        final edge = EdgeInsets.only(
-          bottom: media.viewInsets.bottom + AppConfig.spacingLG,
-          left: AppConfig.spacingLG,
-          right: AppConfig.spacingLG,
-          top: AppConfig.spacingLG,
-        );
-        final title = _selectedGradeType == 'monthly'
-            ? 'إضافة امتحان شهري'
-            : 'إضافة امتحان يومي';
-
-        final controller = TextEditingController(text: '0');
-
-        void syncFromText(String t) {
-          final v = double.tryParse(t);
-          if (v != null) {
-            value = v.clamp(0, 100).toDouble();
-          }
-        }
-
-        return Padding(
-          padding: edge,
-          child: Form(
-            key: formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '$title - ${student.fullName}',
-                        style: GoogleFonts.cairo(
-                          fontSize: AppConfig.fontSizeXLarge,
-                          fontWeight: FontWeight.bold,
-                          color: AppConfig.textPrimaryColor,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.of(ctx).pop(),
-                      icon: const Icon(Icons.close),
-                      color: AppConfig.textSecondaryColor,
-                      tooltip: 'إغلاق',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: AppConfig.spacingMD),
-                Text(
-                  'الدرجة (0 - 100)',
-                  style: GoogleFonts.cairo(
-                    fontSize: AppConfig.fontSizeSmall,
-                    fontWeight: FontWeight.w600,
-                    color: AppConfig.textSecondaryColor,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                TextFormField(
-                  controller: controller,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: InputDecoration(
-                    hintText: 'أدخل الدرجة من 100',
-                    filled: true,
-                    fillColor: AppConfig.surfaceColor,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppConfig.borderRadius),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                  validator: (t) {
-                    final v = double.tryParse(t ?? '');
-                    if (v == null) return 'يرجى إدخال رقم صحيح';
-                    if (v < 0 || v > 100) return 'القيمة يجب أن تكون بين 0 و 100';
-                    return null;
-                  },
-                  onChanged: (t) => setState(() => syncFromText(t)),
-                ),
-                const SizedBox(height: AppConfig.spacingMD),
-                SliderTheme(
-                  data: SliderTheme.of(ctx).copyWith(
-                    activeTrackColor: AppConfig.primaryColor,
-                    thumbColor: AppConfig.secondaryColor,
-                    overlayColor: AppConfig.secondaryColor.withValues(alpha: 0.2),
-                  ),
-                  child: StatefulBuilder(
-                    builder: (context, setSt) {
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Slider(
-                            value: value.clamp(0, 100).toDouble(),
-                            min: 0,
-                            max: 100,
-                            divisions: 100,
-                            label: value.toStringAsFixed(0),
-                            onChanged: (v) {
-                              setSt(() => value = v);
-                              controller.text = v.toStringAsFixed(0);
-                            },
-                          ),
-                          Align(
-                            alignment: Alignment.center,
-                            child: Text(
-                              '${value.toStringAsFixed(0)} / 100',
-                              style: GoogleFonts.cairo(
-                                fontSize: AppConfig.fontSizeSmall,
-                                color: AppConfig.textSecondaryColor,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: AppConfig.spacingLG),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.of(ctx).pop(),
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: AppConfig.borderColor),
-                          padding: const EdgeInsets.symmetric(
-                            vertical: AppConfig.spacingMD,
-                          ),
-                        ),
-                        child: Text(
-                          'إلغاء',
-                          style: GoogleFonts.cairo(
-                            fontWeight: FontWeight.w600,
-                            color: AppConfig.textPrimaryColor,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: AppConfig.spacingMD),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: () async {
-                          if (!(formKey.currentState?.validate() ?? false)) return;
-                          final v = double.tryParse(controller.text) ?? value;
-                          final double grade = v.clamp(0, 100).toDouble();
-                          if (_selectedGradeType == 'monthly') {
-                            await _updateMonthlyGrade(
-                              student.id,
-                              _selectedTerm,
-                              _monthLabelToIndex(_selectedMonthLabel),
-                              grade,
-                            );
-                          } else {
-                            await _updateDailyGrade(student.id, grade);
-                          }
-                          if (!ctx.mounted) return;
-                          Navigator.of(ctx).pop();
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppConfig.secondaryColor,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            vertical: AppConfig.spacingMD,
-                          ),
-                          elevation: AppConfig.buttonElevation,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppConfig.borderRadius),
-                          ),
-                        ),
-                        icon: const Icon(Icons.check_circle_outline),
-                        label: Text(
-                          'حفظ',
-                          style: GoogleFonts.cairo(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _deleteLatestGrade(String studentId) async {
-    final grades = _gradesByStudent[studentId] ?? [];
-    List<Grade> filtered;
-    if (_selectedGradeType == 'monthly') {
-      final monthIndex = _monthLabelToIndex(_selectedMonthLabel);
-      filtered = grades.where((g) {
-        if (g.gradeType != 'monthly') return false;
-        final data = g.additionalData ?? {};
-        return data['term'] == _selectedTerm && data['month'] == monthIndex;
-      }).toList()..sort((a, b) => b.date.compareTo(a.date));
-    } else {
-      filtered = grades.where((g) => g.gradeType == 'daily').toList()
-        ..sort((a, b) => b.date.compareTo(a.date));
-    }
-    if (filtered.isEmpty) return;
-    final latest = filtered.first;
-    final ok = await _studentService.deleteGrade(latest.id);
-    if (ok) {
-      setState(() {
-        grades.removeWhere((g) => g.id == latest.id);
-        _gradesByStudent[studentId] = grades;
-        _calculateStats();
-      });
-    }
-  }
 
   @override
   void dispose() {
@@ -612,113 +468,6 @@ class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  Future<Uint8List> _buildGradesPdfBytes() async {
-    final doc = pw.Document();
-    final term = _selectedGradeType == 'monthly' ? _selectedTerm : 'يومي';
-    final monthLabel = _selectedGradeType == 'monthly' ? _selectedMonthLabel : '';
-    final headers = ['الرقم', 'اسم الطالب', 'الدرجة', 'من', 'النسبة %'];
-
-    // Try to load Arabic fonts; prefer assets/fonts/, fallback to project root
-    pw.Font? regularFont;
-    pw.Font? boldFont;
-    Future<pw.Font?> _tryLoad(String path) async {
-      try {
-        final data = await rootBundle.load(path);
-        return pw.Font.ttf(data);
-      } catch (_) {
-        return null;
-      }
-    }
-    regularFont = await _tryLoad('assets/fonts/Cairo-Regular.ttf')
-        ?? await _tryLoad('Cairo-Regular.ttf');
-    boldFont = await _tryLoad('assets/fonts/Cairo-Bold.ttf')
-        ?? await _tryLoad('Cairo-Bold.ttf');
-    if (boldFont == null && regularFont != null) {
-      boldFont = regularFont; // fallback
-    }
-
-    List<List<String>> rows = [];
-    for (final s in _students) {
-      final grades = (_gradesByStudent[s.id] ?? []).toList()
-        ..sort((a, b) => b.date.compareTo(a.date));
-      Grade? g;
-      if (_selectedGradeType == 'monthly') {
-        final monthIndex = _monthLabelToIndex(_selectedMonthLabel);
-        for (final x in grades) {
-          if (x.gradeType == 'monthly') {
-            final data = x.additionalData ?? {};
-            if (data['term'] == _selectedTerm && data['month'] == monthIndex) {
-              g = x;
-              break;
-            }
-          }
-        }
-      } else {
-        final daily = grades.where((x) => x.gradeType == 'daily');
-        g = daily.isNotEmpty ? daily.first : null;
-      }
-      if (g != null) {
-        final percent = ((g.score / g.maxScore) * 100).toStringAsFixed(0);
-        rows.add([
-          s.studentId,
-          s.fullName,
-          g.score.toStringAsFixed(0),
-          g.maxScore.toStringAsFixed(0),
-          percent,
-        ]);
-      } else {
-        rows.add([s.studentId, s.fullName, '-', '-', '-']);
-      }
-    }
-
-    final pageTheme = (regularFont != null && boldFont != null)
-        ? pw.PageTheme(
-            textDirection: pw.TextDirection.rtl,
-            theme: pw.ThemeData.withFont(base: regularFont, bold: boldFont),
-          )
-        : const pw.PageTheme(
-            textDirection: pw.TextDirection.rtl,
-          );
-
-    doc.addPage(
-      pw.MultiPage(
-        pageTheme: pageTheme,
-        build: (context) => [
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              pw.Text('تقرير الدرجات', style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold)),
-              pw.SizedBox(height: 6),
-              pw.Text('المدرسة: ${_selectedSchool?.name ?? '-'}'),
-              pw.Text('النوع: ${_gradeTypeLabels[_selectedGradeType]} ${monthLabel.isNotEmpty ? ' - $monthLabel' : ''} ($term)'),
-              pw.SizedBox(height: 12),
-              pw.TableHelper.fromTextArray(
-                headers: headers,
-                data: rows,
-                headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-                headerDecoration: pw.BoxDecoration(color: PdfColors.grey300),
-                border: null,
-                cellAlignment: pw.Alignment.centerRight,
-              ),
-              pw.SizedBox(height: 12),
-              pw.Text('متوسط الصف: ${_classAverage.toStringAsFixed(1)}%  | ممتاز: $_excellentCount  جيد: $_goodCount  مقبول: $_passCount  راسب: $_failCount'),
-            ],
-          ),
-        ],
-      ),
-    );
-
-    return doc.save();
-  }
-
-  Future<void> _printGradesReport() async {
-    await Printing.layoutPdf(onLayout: (format) async => await _buildGradesPdfBytes());
-  }
-
-  Future<void> _shareGradesReport() async {
-    final bytes = await _buildGradesPdfBytes();
-    await Printing.sharePdf(bytes: bytes, filename: 'grades_report.pdf');
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -750,11 +499,28 @@ class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
         actions: [
           IconButton(
             icon: const Icon(Icons.print_outlined, color: Colors.white),
-            onPressed: _printGradesReport,
+            onPressed: _printDynGrades,
+            tooltip: 'طباعة تقرير الدرجات',
           ),
-          IconButton(
-            icon: const Icon(Icons.share_outlined, color: Colors.white),
-            onPressed: _shareGradesReport,
+        ],
+      ),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingActionButton.extended(
+            heroTag: 'fab_add_row',
+            onPressed: _addRow,
+            backgroundColor: AppConfig.secondaryColor,
+            label: const Text('إضافة صف'),
+            icon: const Icon(Icons.add),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'fab_add_col',
+            onPressed: _quickAddColumn,
+            backgroundColor: AppConfig.primaryColor,
+            label: const Text('إضافة عمود'),
+            icon: const Icon(Icons.view_column),
           ),
         ],
       ),
@@ -895,10 +661,6 @@ class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
   Widget _buildSelectionAndFiltersSection() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final width = constraints.maxWidth;
-        final isCompact = width < 600;
-        final double gap = AppConfig.spacingMD;
-        final double itemWidth = isCompact ? width : (width - gap) / 2;
         return AnimatedContainer(
           duration: const Duration(milliseconds: 250),
           curve: Curves.easeInOut,
@@ -918,141 +680,44 @@ class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'اختيار المدرسة',
-                  style: GoogleFonts.cairo(
-                    fontSize: AppConfig.fontSizeXLarge,
-                    fontWeight: FontWeight.bold,
-                    color: AppConfig.textPrimaryColor,
-                  ),
-                ),
-                const SizedBox(height: AppConfig.spacingLG),
                 Wrap(
-                  spacing: gap,
-                  runSpacing: gap,
+                  spacing: AppConfig.spacingMD,
+                  runSpacing: AppConfig.spacingSM,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    SizedBox(
-                      width: itemWidth,
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 320),
                       child: DropdownButtonFormField<String>(
                         initialValue: _selectedSchool?.id,
-                        decoration: InputDecoration(
-                          labelText: 'اختر المدرسة',
-                          labelStyle: GoogleFonts.cairo(
-                            color: AppConfig.textSecondaryColor,
-                          ),
-                          filled: true,
-                          fillColor: AppConfig.surfaceColor,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(
-                              AppConfig.borderRadius,
-                            ),
-                            borderSide: BorderSide.none,
-                          ),
-                        ),
+                        decoration: const InputDecoration(labelText: 'المدرسة'),
                         items: _schools
-                            .map(
-                              (s) => DropdownMenuItem(
-                                value: s.id,
-                                child: Text(
-                                  s.name,
-                                  style: GoogleFonts.cairo(
-                                    color: AppConfig.textPrimaryColor,
-                                  ),
-                                ),
-                              ),
-                            )
+                            .map((s) => DropdownMenuItem(value: s.id, child: Text(s.name)))
                             .toList(),
-                        onChanged: (value) => _onSchoolChanged(value),
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: AppConfig.spacingLG),
-
-                Text(
-                  'الفلاتر',
-                  style: GoogleFonts.cairo(
-                    fontSize: AppConfig.fontSizeXLarge,
-                    fontWeight: FontWeight.bold,
-                    color: AppConfig.textPrimaryColor,
-                  ),
-                ),
-                const SizedBox(height: AppConfig.spacingLG),
-                Wrap(
-                  spacing: gap,
-                  runSpacing: gap,
-                  children: [
-                    SizedBox(
-                      width: itemWidth,
-                      child: DropdownButtonFormField<String>(
-                        initialValue: _selectedGradeType,
-                        decoration: InputDecoration(
-                          labelText: 'نوع الدرجة',
-                          labelStyle: GoogleFonts.cairo(
-                            color: AppConfig.textSecondaryColor,
-                          ),
-                          filled: true,
-                          fillColor: AppConfig.surfaceColor,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(
-                              AppConfig.borderRadius,
-                            ),
-                            borderSide: BorderSide.none,
-                          ),
-                        ),
-                        items: _gradeTypeLabels.entries
-                            .map(
-                              (e) => DropdownMenuItem(
-                                value: e.key,
-                                child: Text(
-                                  e.value,
-                                  style: GoogleFonts.cairo(
-                                    color: AppConfig.textPrimaryColor,
-                                  ),
-                                ),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: (value) {
-                          if (value == null) return;
+                        onChanged: (id) async {
+                          if (id == null) return;
+                          final school = _schools.firstWhere((e) => e.id == id);
                           setState(() {
-                            _selectedGradeType = value;
-                            _calculateStats();
+                            _selectedSchool = school;
+                            _isLoading = true;
+                          });
+                          // Load per-school table (no student sync)
+                          await _loadDynTable();
+                          setState(() {
+                            _isLoading = false;
                           });
                         },
                       ),
                     ),
-                    if (_selectedGradeType == 'monthly')
-                      SizedBox(
-                        width: itemWidth,
-                        child: _buildDropdown(
-                          'الشهر',
-                          _selectedMonthLabel,
-                          _months,
-                          (value) {
-                            setState(() {
-                              _selectedMonthLabel = value!;
-                              _calculateStats();
-                            });
-                          },
-                        ),
-                      ),
-                    if (_selectedGradeType == 'monthly')
-                      SizedBox(
-                        width: itemWidth,
-                        child: _buildDropdown(
-                          'الفصل الدراسي',
-                          _selectedTerm,
-                          _terms,
-                          (value) {
-                            setState(() {
-                              _selectedTerm = value!;
-                              _calculateStats();
-                            });
-                          },
-                        ),
-                      ),
+                    ElevatedButton.icon(
+                      onPressed: _addRow,
+                      icon: const Icon(Icons.add),
+                      label: const Text('إضافة صف'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: _quickAddColumn,
+                      icon: const Icon(Icons.view_column),
+                      label: const Text('إضافة عمود'),
+                    ),
                   ],
                 ),
               ],
@@ -1220,312 +885,111 @@ class _GradesPageState extends State<GradesPage> with TickerProviderStateMixin {
       ),
       child: Padding(
         padding: const EdgeInsets.all(AppConfig.spacingLG),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            LayoutBuilder(
-              builder: (context, constraints) {
-                return Wrap(
-                  spacing: AppConfig.spacingMD,
-                  runSpacing: AppConfig.spacingSM,
-                  alignment: WrapAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'قائمة الطلاب والدرجات',
-                      style: GoogleFonts.cairo(
-                        fontSize: AppConfig.fontSizeXLarge,
-                        fontWeight: FontWeight.bold,
-                        color: AppConfig.textPrimaryColor,
-                      ),
-                    ),
-                    Text(
-                      'عدد الطلاب: ${_students.length}',
-                      style: GoogleFonts.cairo(
-                        fontSize: AppConfig.fontSizeMedium,
-                        color: AppConfig.textSecondaryColor,
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(height: AppConfig.spacingLG),
-            ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _students.length,
-              separatorBuilder: (context, index) =>
-                  Divider(color: AppConfig.borderColor, height: 1),
-              itemBuilder: (context, index) {
-                final student = _students[index];
-                List<Grade> currentList;
-                if (_selectedGradeType == 'monthly') {
-                  final monthIndex = _monthLabelToIndex(_selectedMonthLabel);
-                  currentList = (_gradesByStudent[student.id] ?? []).where((g) {
-                    if (g.gradeType != 'monthly') return false;
-                    final data = g.additionalData ?? {};
-                    return data['term'] == _selectedTerm &&
-                        data['month'] == monthIndex;
-                  }).toList()..sort((a, b) => b.date.compareTo(a.date));
-                } else {
-                  currentList =
-                      (_gradesByStudent[student.id] ?? [])
-                          .where((g) => g.gradeType == 'daily')
-                          .toList()
-                        ..sort((a, b) => b.date.compareTo(a.date));
+        child: LayoutBuilder(
+          builder: (context, c) {
+            final vw = c.maxWidth;
+            final vh = MediaQuery.of(context).size.height;
+            final gridHeight = vw < 600 ? (vh * 0.55).clamp(320, 560) : (vw < 900 ? 520.0 : 600.0);
+
+            final columns = <PlutoColumn>[
+              PlutoColumn(
+                title: '',
+                field: '__actions__',
+                type: PlutoColumnType.text(),
+                readOnly: true,
+                width: 56,
+                frozen: PlutoColumnFrozen.start,
+                renderer: (ctx) {
+                  final rowId = ctx.row.cells['id']!.value as String;
+                  return IconButton(
+                    tooltip: 'حذف الصف',
+                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                    onPressed: () => _deleteRow(rowId),
+                  );
+                },
+              ),
+              ..._dynCols.map((c) {
+                if (c.readOnly || c.type == DynColType.percent) {
+                  return PlutoColumn(
+                    title: c.title,
+                    field: c.id,
+                    type: PlutoColumnType.text(),
+                    readOnly: true,
+                    minWidth: 120,
+                  );
                 }
-                final currentGrade = currentList.isNotEmpty
-                    ? (currentList.first.score / currentList.first.maxScore) *
-                          100.0
-                    : 0.0;
-
-                return LayoutBuilder(
-                  builder: (context, itemC) {
-                    final w = itemC.maxWidth;
-                    final isTight = w < 520;
-                    final inputWidth = w >= 900
-                        ? 120.0
-                        : (w >= 700 ? 100.0 : 80.0);
-                    final title = Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        CircleAvatar(
-                          backgroundColor: AppConfig.primaryColor.withValues(
-                            alpha: 0.1,
-                          ),
-                          child: Text(
-                            student.initials,
-                            style: GoogleFonts.cairo(
-                              color: AppConfig.primaryColor,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: AppConfig.spacingMD),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              FittedBox(
-                                fit: BoxFit.scaleDown,
-                                alignment: AlignmentDirectional.centerStart,
-                                child: Text(
-                                  student.fullName,
-                                  style: GoogleFonts.cairo(
-                                    fontSize: AppConfig.fontSizeMedium,
-                                    fontWeight: FontWeight.bold,
-                                    color: AppConfig.textPrimaryColor,
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                'رقم الطالب: ${student.studentId}',
-                                style: GoogleFonts.cairo(
-                                  fontSize: AppConfig.fontSizeSmall,
-                                  color: AppConfig.textSecondaryColor,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    );
-
-                    final gradeInput = SizedBox(
-                      width: inputWidth,
-                      child: TextFormField(
-                        textAlign: TextAlign.center,
-                        keyboardType: TextInputType.number,
-                        decoration: InputDecoration(
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(
-                              color: AppConfig.borderColor,
-                            ),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(
-                              color: AppConfig.primaryColor,
-                            ),
-                          ),
-                        ),
-                        initialValue: currentGrade.toStringAsFixed(0),
-                        onFieldSubmitted: (value) async {
-                          double? grade = double.tryParse(value);
-                          if (grade != null && grade >= 0 && grade <= 100) {
-                            await _updateMonthlyGrade(
-                              student.id,
-                              _selectedTerm,
-                              _monthLabelToIndex(_selectedMonthLabel),
-                              grade,
-                            );
-                          }
-                        },
-                      ),
-                    );
-
-                    final gradeColor = _getGradeColor(currentGrade);
-                    final gradeChip = Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: gradeColor.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: gradeColor),
-                      ),
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          _getGradeText(currentGrade),
-                          style: GoogleFonts.cairo(
-                            fontSize: AppConfig.fontSizeSmall,
-                            color: gradeColor,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    );
-
-                    final actions = Wrap(
-                      spacing: AppConfig.spacingSM,
-                      children: [
-                        IconButton(
-                          tooltip: 'إضافة',
-                          icon: const Icon(Icons.add_circle_outline),
-                          color: AppConfig.infoColor,
-                          onPressed: () => _addGradeDialog(student),
-                        ),
-                        IconButton(
-                          tooltip: 'حذف آخر درجة',
-                          icon: const Icon(Icons.delete_outline),
-                          color: AppConfig.errorColor,
-                          onPressed: () => _deleteLatestGrade(student.id),
-                        ),
-                      ],
-                    );
-
-                    return AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      padding: const EdgeInsets.all(AppConfig.spacingMD),
-                      decoration: BoxDecoration(
-                        color: index % 2 == 0
-                            ? AppConfig.backgroundColor
-                            : AppConfig.cardColor,
-                        borderRadius: BorderRadius.circular(
-                          AppConfig.borderRadius / 2,
-                        ),
-                      ),
-                      child: isTight
-                          ? Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                title,
-                                const SizedBox(height: AppConfig.spacingSM),
-                                Wrap(
-                                  spacing: AppConfig.spacingSM,
-                                  runSpacing: AppConfig.spacingSM,
-                                  crossAxisAlignment: WrapCrossAlignment.center,
-                                  children: [gradeInput, gradeChip, actions],
-                                ),
-                              ],
-                            )
-                          : Row(
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              children: [
-                                Expanded(child: title),
-                                const SizedBox(width: AppConfig.spacingSM),
-                                gradeInput,
-                                const SizedBox(width: AppConfig.spacingSM),
-                                gradeChip,
-                                const SizedBox(width: AppConfig.spacingSM),
-                                actions,
-                              ],
-                            ),
-                    );
-                  },
+                if (c.type == DynColType.number) {
+                  return PlutoColumn(
+                    title: c.title,
+                    field: c.id,
+                    type: PlutoColumnType.text(),
+                    enableEditingMode: true,
+                    minWidth: 120,
+                  );
+                }
+                return PlutoColumn(
+                  title: c.title,
+                  field: c.id,
+                  type: PlutoColumnType.text(),
+                  enableEditingMode: true,
+                  minWidth: 160,
                 );
-              },
-            ),
-          ],
+              }),
+            ];
+
+            final rows = _dynRows.map((r) {
+              final cells = <String, PlutoCell>{
+                'id': PlutoCell(value: r['id'] ?? ''),
+                '__actions__': PlutoCell(value: ''),
+              };
+              for (final c in _dynCols) {
+                cells[c.id] = PlutoCell(value: r[c.id] ?? '');
+              }
+              return PlutoRow(cells: cells);
+            }).toList();
+
+            return Container(
+              height: gridHeight.toDouble(),
+              decoration: BoxDecoration(
+                border: Border.all(color: AppConfig.borderColor),
+                borderRadius: BorderRadius.circular(AppConfig.borderRadius / 2),
+              ),
+              child: PlutoGrid(
+                columns: columns,
+                rows: rows,
+                configuration: PlutoGridConfiguration(
+                  style: PlutoGridStyleConfig(
+                    gridBorderColor: AppConfig.borderColor,
+                    evenRowColor: AppConfig.backgroundColor,
+                    oddRowColor: AppConfig.cardColor,
+                    activatedColor: AppConfig.primaryColor.withValues(alpha: 0.08),
+                    cellTextStyle: GoogleFonts.cairo(
+                      color: AppConfig.textPrimaryColor,
+                      fontSize: AppConfig.fontSizeSmall,
+                    ),
+                    columnTextStyle: GoogleFonts.cairo(
+                      color: AppConfig.textPrimaryColor,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                onChanged: (e) {
+                  final rowId = e.row.cells['id']!.value as String;
+                  final colId = e.column.field;
+                  final val = (e.value ?? '').toString();
+                  final row = _dynRows.firstWhere((r) => r['id'] == rowId, orElse: () => {});
+                  if (row.isEmpty) return;
+                  row[colId] = val;
+                  _saveDynTable();
+                },
+              ),
+            );
+          },
         ),
       ),
     );
   }
 
-  Widget _buildDropdown(
-    String label,
-    String value,
-    List<String> items,
-    ValueChanged<String?> onChanged,
-  ) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: GoogleFonts.cairo(
-            fontSize: AppConfig.fontSizeSmall,
-            fontWeight: FontWeight.w600,
-            color: AppConfig.textSecondaryColor,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Container(
-          decoration: BoxDecoration(
-            border: Border.all(color: AppConfig.borderColor, width: 1),
-            borderRadius: BorderRadius.circular(AppConfig.borderRadius / 2),
-          ),
-          child: DropdownButton<String>(
-            value: value,
-            onChanged: onChanged,
-            items: items.map((item) {
-              return DropdownMenuItem(
-                value: item,
-                child: Text(
-                  item,
-                  style: GoogleFonts.cairo(
-                    fontSize: AppConfig.fontSizeSmall,
-                    color: AppConfig.textPrimaryColor,
-                  ),
-                ),
-              );
-            }).toList(),
-            style: GoogleFonts.cairo(
-              fontSize: AppConfig.fontSizeSmall,
-              color: AppConfig.textPrimaryColor,
-            ),
-            underline: Container(),
-            isExpanded: true,
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppConfig.spacingMD,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Color _getGradeColor(double grade) {
-    if (grade >= 90) return AppConfig.successColor;
-    if (grade >= 80) return AppConfig.infoColor;
-    if (grade >= 60) return AppConfig.warningColor;
-    return AppConfig.errorColor;
-  }
-
-  String _getGradeText(double grade) {
-    if (grade >= 90) return 'ممتاز';
-    if (grade >= 80) return 'جيد جداً';
-    if (grade >= 60) return 'مقبول';
-    return 'راسب';
-  }
 
   int _monthLabelToIndex(String label) {
     switch (label) {

@@ -1192,7 +1192,8 @@ class _AddStudentDialogState extends State<AddStudentDialog> {
     }
 
     // Refresh parent list on success
-    final parentState = context.findAncestorStateOfType<_SchoolStudentsPageState>();
+    final parentState = context
+        .findAncestorStateOfType<_SchoolStudentsPageState>();
     await parentState?._loadStudents();
     if (!mounted) return;
 

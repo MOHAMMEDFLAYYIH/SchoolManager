@@ -6,8 +6,6 @@ import 'package:school_app/school_management/services/school_service.dart';
 import 'package:school_app/student_management/services/student_service.dart';
 import 'package:uuid/uuid.dart';
 
- 
-
 class AttendanceGradesSystemPage extends StatefulWidget {
   const AttendanceGradesSystemPage({super.key});
 
